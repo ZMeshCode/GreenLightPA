@@ -1,0 +1,184 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+Realtime Prior‑Authorization Navigator – Technical Specification
+
+1. Project Overview
+
+Goal: Automate the prior‑authorization (PA) process in real time—from clinical note to payer approval—reducing clerical load, turnaround time, and denial rates for high‑volume specialty clinics (oncology, rheumatology, imaging).
+
+Value Proposition: Save clinicians ~13 hrs/week, accelerate patient care, and cut revenue leakage. Competitive edge comes from a Retrieval‑Augmented Generation (RAG) engine that stays current on each payer’s ever‑shifting medical‑necessity rules.
+
+2. Stakeholders & User Personas
+
+Persona	Pain Point	Desired Outcome
+Clinician (MD/NP)	Wasted time on forms & phone trees	Instant PA during visit
+Back‑office Staff	Manual data entry, faxing, follow‑ups	Auto‑generated packets & status tracking
+Payer Reviewer	Missing info, incorrect codes	Structured, policy‑mapped submission
+Patient	Treatment delays	Same‑day approval
+DevOps / IT	Integration & security	Standards‑based APIs, HIPAA compliance
+
+3. Functional Requirements
+	1.	Document Intake: Pull encounter note & labs via FHIR/HL7, or PDF/CCDA upload.
+	2.	Clinical Code Extraction: Detect ICD‑10, CPT, HCPCS, SNOMED, NDC codes.
+	3.	Policy RAG: Match extracted data against payer‑specific PA criteria (PDF, HTML, or API).
+	4.	Packet Generation: Auto‑populate payer form (X12 278 or web form) + cover letter.
+	5.	Submission & Tracking: Send via payer API / secure fax / voicebot, poll status, surface updates.
+	6.	Audit Trail: Persist artifacts & timestamps for compliance.
+	7.	User UI: Web dashboard + EHR‑embedded SMART‑on‑FHIR widget.
+	8.	Analytics: Metrics on turnaround time, approval rate, staff hours saved.
+
+4. Non‑Functional Requirements
+	•	Latency: <5 s for packet draft; <2 h target for approval after submission.
+	•	Reliability: 99.9 % uptime.
+	•	Security: HIPAA, SOC 2 Type II.
+	•	Scalability: 10k PA requests/day initial target.
+	•	Explainability: Highlight policy passages that justify each requirement met.
+
+5. Tech Stack
+
+Layer	Choice	Rationale
+Backend	Python 3.11, FastAPI	Async, type‑safe, OpenAPI auto‑docs
+LLM / RAG	OpenAI GPT‑4o (chat‑completions) or local Llama‑3 70B with vLLM; orchestrated via LangChain	Best‑in‑class reasoning; fallback on‑prem for PHI
+Vector Store	PostgreSQL 16 + pgvector (starter) → Pinecone (scale)	Cheap dev start, seamless SaaS scaling
+NLP Pipeline	spaCy / medSpaCy + custom transformer fine‑tune for code extraction	High precision medical NER
+Payer Integration	X12 278 via Change Healthcare API or direct FHIR‑PA endpoints; Selenium fallback for portals	Covers >70 % US payers
+Voicebot	Twilio Voice + OpenAI Whisper ASR	For payers that still require IVR
+Frontend	React 18 + TypeScript + Next.js 14; shadcn/ui components	Snappy UX; SSR for EHR widget
+Auth	OAuth 2.0 / OIDC via Auth0; SMART‑on‑FHIR context launch	Standards‑based SSO
+Data Store	PostgreSQL for app data; S3 for documents; Redis for caching	Proven, HIPAA‑ready
+Infra	Docker, Kubernetes (AWS EKS) + Terraform	Portable & scalable
+CI/CD	GitHub Actions → ArgoCD	Automated, auditable deployments
+Observability	Prometheus + Grafana + Loki	Metrics, logs, traces
+6. System Architecture (Logical)
+
+           +--------------------+
+           |  React / SMART UI  |
+           +---------+----------+
+                     |
+                     v [FHIR token]
++--------------------+-------------------+
+|  API Gateway (FastAPI) – HTTPS/LB      |
++----------------+-----------------------+
+| Document Intake|  Auth Service         |
++----------------+-----------------------+
+| NLP Extraction |  RAG Engine           |
++----------------+-----------------------+
+| Orchestrator & Submission Worker Pool  |
++----------------+-----------------------+
+| Vector DB | Relational DB | Cache      |
++---------+----------------+------------+
+                     |
+          +----------+-------------+
+          | Payer APIs / IVR / Fax |
+          +-----------------------+
+
+Data Flow:
+	1.	Widget sends encounter ID → Intake pulls FHIR Encounter, DocumentReference resources.
+	2.	NLP service extracts structured codes & key facts.
+	3.	RAG engine retrieves payer policy chunks + runs LLM prompt → eligibility verdict & missing items.
+	4.	Orchestrator assembles X12 278 JSON, invokes Payer Gateway.
+	5.	Gateway submits & tracks response; status events stream back to UI.
+
+7. Implementation Roadmap
+
+Phase	Duration	Deliverables
+0. Foundations	2 w	Repo setup, CI/CD, envs, HIPAA BAA with OpenAI, Payer sandbox credentials
+1. MVP (Clinic‑side)	4 w	FHIR pull, NLP extraction ≥90 % recall on 200 docs; manual policy selection
+2. RAG + Draft Packet	5 w	Vector store, policy ingestion pipeline, LLM prompt templates, packet generator
+3. Submission Automation	4 w	X12 278 API client, webhook listener, basic dashboard
+4. Voicebot & Portal Automation	3 w	Twilio IVR bot, Selenium fallback
+5. Pilot & Hardening	6 w	Security audit, load‑test 1k req/day, pilot in rheumatology clinic
+6. GA Launch	2 w	Multi‑tenant support, billing, SLA dashboards
+Total: ~26 weeks.		
+
+8. Data Generation & Policy Ingestion Details
+
+8.1 Synthetic Pre‑Pilot Dataset
+
+To validate the pipeline before real data arrives, create a HIPAA‑safe synthetic dataset in four ordered steps:
+	1.	Attach the Prior‑Auth module – Add a JSON module to synthea/modules/ that tags oncology and rheumatology procedures with a prior_auth flag and sets outcomes at 80 % Approved / 20 % Denied.
+	2.	Generate 500 synthetic patients with the custom module:
+
+docker run --rm -v $PWD/data:/synthea/output synthetichealth/synthea \
+  -p 500 -m oncology,rheumatology
+
+
+	3.	ETL & De‑identify – Run scripts/fhir_to_notes.py to convert FHIR bundles to JSONL (note, codes, decision) and pass through Philter for Safe‑Harbor PHI scrubbing.
+	4.	Embed & index – Compute embeddings with a local model and store in PostgreSQL + pgvector; this powers extraction fine‑tuning and RAG retrieval.
+
+8.2 Policy Repository
+	•	Policy Scraper: Nightly crawler ingests payer PDFs/HTML, chunks them, and writes embeddings.
+	•	Schema: {payer_id, policy_id, specialty, updated_at, chunk_vec, chunk_text}.
+	•	Refresh Cadence: Nightly cron plus on‑demand webhook triggers.
+
+This synthetic pipeline delivers a full E2E demo—clinical note → packet draft → sandbox submission—without exposing PHI, giving us a credible product while outreach is under way.
+
+Policy Repository
+	•	Policy Scraper: Nightly crawler ingests payer PDFs/HTML, chunks them, and writes embeddings.
+	•	Schema: {payer_id, policy_id, specialty, updated_at, chunk_vec, chunk_text}.
+	•	Refresh Cadence: Nightly cron plus on‑demand webhook triggers.
+
+This synthetic pipeline delivers a full E2E demo—clinical note → packet draft → sandbox submission—without exposing PHI, giving us a credible product while outreach is under way.
+
+9. Privacy, Security & Compliance Checklist. Privacy, Security & Compliance Checklist
+	•	Signed BAAs (OpenAI, AWS, Pinecone).
+	•	TLS 1.3 everywhere; AES‑256 at rest.
+	•	Field‑level encryption for PHI columns.
+	•	Role‑based access (RBAC) + audit logs.
+	•	Annual SOC 2 & HIPAA audits.
+	•	Disaster recovery: cross‑region S3, multi‑AZ DB.
+
+10. Testing & Evaluation Metrics
+
+KPI	Target
+Draft accuracy (required data present)	≥95 %
+Turnaround time to payer response	<24 h avg
+Staff hours saved	≥10 hrs/provider/wk
+Approval rate uplift	+15 % over baseline
+System latency (draft)	<5 s
+
+11. Deployment & Ops
+	•	Environments: dev → staging (synthetic PHI) → prod (seg VPC).
+	•	Blue‑Green deploys with automatic rollback on health‑check fail.
+	•	Secrets Management: AWS Secrets Manager + sealed secrets in Git.
+	•	Alerting: PagerDuty on SLO breach; Slack for non‑crit events.
+
+12. Cost Projection (Lean Pilot – 10k requests/mo)
+
+Item	Est. Monthly
+GPU host (T4 spot, vLLM)	$110
+Serverless app + Postgres/pgvector	$90
+Twilio SMS status alerts	$15
+Logging & monitoring	$40
+Total	≈ $255
+
+Note: Apply for AWS/GCP/NVIDIA startup credits to drive this effectively to ~$0 for the first 6–12 months.
+
+13. Team Roles. Team Roles
+	•	Product Lead (you)
+	•	AI Engineer – LLM, RAG, NLP pipelines
+	•	Backend Engineer – API, microservices, DB
+	•	DevOps – CI/CD, infra, security
+	•	Frontend Engineer – React widget & dashboard
+	•	Clinical Advisor – validate policy mappings
+
+14. Future Extensions
+	1.	Automated appeals & peer‑to‑peer scheduling.
+	2.	Cost‑estimate chatbot for patients.
+	3.	Continuous learning loop— fine‑tune extraction on denied cases.
+
+15. Appendix
+	•	Standards Reference: HL7 FHIR v4.0.1, X12 278, SMART‑on‑FHIR.
+	•	Prompt Template Example:
+
+You are a prior‑auth policy expert. Given <policy_chunk> and <extracted_codes>, determine ...
+
+
+	•	Glossary: RAG, IVR, CPT, ICD‑10, HCPCS, NDC, …
+
+⸻
+
+End of Specification
