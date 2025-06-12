@@ -5,6 +5,8 @@ Synthetic data generation and management endpoints
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List, Dict, Any
+from pathlib import Path
+import asyncio
 import logging
 
 from app.core.database import get_database
@@ -167,7 +169,7 @@ async def search_similar_policies(
     Search for similar policy chunks using vector similarity
     """
     try:
-        from app.services.embedding_service import EmbeddingService
+        from services.embedding_service import EmbeddingService
         from sqlalchemy import text
         
         embedding_service = EmbeddingService()

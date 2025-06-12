@@ -12,6 +12,7 @@ import hashlib
 import pickle
 import os
 from pathlib import Path
+import torch
 
 try:
     from sentence_transformers import SentenceTransformer

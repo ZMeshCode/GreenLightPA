@@ -1,59 +1,139 @@
-version: '3.8'
+# GreenLightPA Docker Compose Configuration
 
 services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_DB: greenlight
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    environment:
-      PGADMIN_DEFAULT_EMAIL: admin@greenlightpa.com
-      PGADMIN_DEFAULT_PASSWORD: admin
-    ports:
-      - "5050:80"
-    depends_on:
-      - postgres
-    volumes:
-      - pgadmin_data:/var/lib/pgadmin
-
-  api:
-    build: .
+  # FastAPI Application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: greenlightpa_app
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/greenlight
-      REDIS_URL: redis://redis:6379
-    depends_on:
-      postgres:
-        condition: service_healthy
+      - DATABASE_URL=postgresql://greenlight_user:dev_password_123@postgres:5432/greenlightpa_dev
+      - REDIS_URL=redis://redis:6379/0
+      - N8N_WEBHOOK_URL=http://n8n:5678/webhook
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-your_openai_api_key_here}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY:-your_langsmith_key_here}
+      - LANGCHAIN_PROJECT=greenlightpa-dev
+      - LANGCHAIN_TRACING_V2=true
+      - SECRET_KEY=${SECRET_KEY:-dev_jwt_secret_key_change_in_production}
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
     volumes:
       - ./app:/app
       - ./data:/app/data
       - ./scripts:/app/scripts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
+  # PostgreSQL Database with pgvector
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: greenlightpa_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: greenlightpa_dev
+      POSTGRES_USER: greenlight_user
+      POSTGRES_PASSWORD: dev_password_123
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U greenlight_user -d greenlightpa_dev"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
   redis:
     image: redis:7-alpine
+    container_name: greenlightpa_redis
     ports:
       - "6379:6379"
     volumes:
       - redis_data:/data
+      - ./config/redis.conf:/usr/local/etc/redis/redis.conf
+    restart: unless-stopped
+    command: redis-server /usr/local/etc/redis/redis.conf
 
+  # N8n Workflow Engine
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: greenlightpa_n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=dev_n8n_pass_123
+      - WEBHOOK_URL=http://n8n:5678/webhook
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=greenlight_user
+      - DB_POSTGRESDB_PASSWORD=dev_password_123
+      - N8N_ENCRYPTION_KEY=dev_encryption_key_change_in_production
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ChromaDB Vector Database
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: greenlightpa_chromadb
+    ports:
+      - "8001:8000"
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+    volumes:
+      - chromadb_data:/chroma/chroma
+    restart: unless-stopped
+
+  # pgAdmin (Development only)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: greenlightpa_pgadmin
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@greenlightpa.dev
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+      - ./config/pgadmin/servers.json:/pgadmin4/servers.json
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    profiles:
+      - development
+
+# Volumes
 volumes:
-  pgdata:
+  postgres_data:
+    name: greenlightpa_postgres_data
+  redis_data:
+    name: greenlightpa_redis_data
+  n8n_data:
+    name: greenlightpa_n8n_data
+  chromadb_data:
+    name: greenlightpa_chromadb_data
   pgadmin_data:
-  redis_data: 
+    name: greenlightpa_pgadmin_data 

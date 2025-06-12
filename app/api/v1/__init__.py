@@ -1,5 +1,5 @@
 """
-API v1 router
+API v1 routes
 """
 
 from fastapi import APIRouter

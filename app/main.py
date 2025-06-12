@@ -7,6 +7,7 @@ from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
+from sqlalchemy import text
 
 from app.core.config import get_settings
 from app.core.database import get_database
@@ -59,7 +60,7 @@ async def health_check(db = Depends(get_database)):
     """Health check endpoint"""
     try:
         # Test database connection
-        await db.execute("SELECT 1")
+        await db.execute(text("SELECT 1"))
         return {
             "status": "healthy",
             "database": "connected",

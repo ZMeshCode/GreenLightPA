@@ -7,9 +7,12 @@ import json
 import logging
 import os
 import subprocess
+import shutil
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import uuid
+import tempfile
+import zipfile
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
